@@ -194,7 +194,7 @@ function skip(msg) error(Skip { msg=msg }) end
 -- (Named "assert_true" to not conflict with standard assert.)
 -- @param msg Message to display with the result.
 function assert_true(got, msg)
-   wraptest(got, msg, { reason="Expected success." })
+   wraptest(got, msg, { reason=fmt("Expected success, got %s.", TS(got)) })
 end
 
 ---got == false.
@@ -211,14 +211,30 @@ end
 
 --got ~= nil
 function assert_not_nil(got, msg)
-   wraptest(got ~= nil, msg, { reason=fmt("Expected non-nil value") })
+   wraptest(got ~= nil, msg,
+            { reason=fmt("Expected non-nil value, got %s", TS(got)) })
 end
 
+local function tol_or_msg(t, m)
+   if not t and not m then return 0, nil
+   elseif type(t) == "string" then return 0, t
+   elseif type(t) == "number" then return t, m
+   else error("Neither a numeric tolerance nor string")
+   end
+end
+
+
 ---exp == got.
-function assert_equal(exp, got, msg)
-   wraptest(exp == got, msg,
-            { reason=fmt("Expected %q, got %q",
-                         TS(exp), TS(got)) })
+function assert_equal(exp, got, tol, msg)
+   tol, msg = tol_or_msg(tol, msg)
+   if type(exp) == "number" and type(got) == "number" then
+      wraptest(math.abs(exp - got) <= tol, msg,
+               { reason=fmt("Expected %s +/- %s, got %s",
+                            TS(exp), TS(tol), TS(got)) })
+   else
+      wraptest(exp == got, msg,
+               { reason=fmt("Expected %q, got %q", TS(exp), TS(got)) })
+   end
 end
 
 ---exp ~= got.
@@ -402,7 +418,7 @@ function assert_error(f, msg)
    local ok, err = pcall(f)
    wraptest(not ok, msg,
             { exp="an error", got=ok or err,
-              reason="Expected an error" })
+              reason=fmt("Expected an error, got %s", TS(got)) })
 end
 
 
@@ -439,7 +455,7 @@ end
 ---Unit testing module, with extensions for random testing.
 module("lunatest")
 
-VERSION = "0.91"
+VERSION = "0.92"
 
 
 -- #########
@@ -558,9 +574,10 @@ local function get_tests(mod)
    end
    ts.setup = rawget(mod, "setup")
    ts.teardown = rawget(mod, "teardown")
+   ts.ssetup = rawget(mod, "suite_setup")
+   ts.steardown = rawget(mod, "suite_teardown")
    return ts
 end
-
 
 ---Add a file as a test suite.
 -- @param modname The module to load as a suite. The file is
@@ -609,8 +626,10 @@ local function run_test(name, test, suite, hooks, setup, teardown)
       end, err_handler(name))
    if now then t_post = now() end
    if t_pre and t_post then elapsed = t_post - t_pre end
-   if is_func(teardown) then teardown(name, elapsed) end
 
+   if ok and is_func(teardown) then
+      ok, err = xpcall(function() teardown(name, elapsed) end, err_handler(name))
+   end
    if ok then err = Pass() end
    result = err
    if elapsed then result.elapsed = elapsed end
@@ -623,6 +642,7 @@ end
 
 
 local function cmd_line_switches(arg)
+   arg = arg or {}
    local opts = {}
    for i=1,#arg do
       local v = arg[i]
@@ -644,6 +664,41 @@ local function failures_or_errors(r)
    end
 end
 
+local function run_suite(hooks, opts, results, suite_filter, sname, tests)
+   local ssetup, steardown = tests.ssetup, tests.steardown
+   tests.ssetup, tests.steardown = nil, nil
+
+   if not suite_filter or sname:match(suite_filter) then
+      local run_suite = true
+      local res = result_table(sname)
+
+      if ssetup then
+         local ok, err = pcall(ssetup)
+         if not ok or (ok and err == false) then
+            run_suite = false
+            local msg = fmt("Error in %s's suite_setup: %s", sname, tostring(err))
+            failed_suites[#failed_suites+1] = sname
+            results.err[sname] = Error{msg=msg}
+         end
+      end
+      
+      if run_suite and count(tests) > 0 then
+         local setup, teardown = tests.setup, tests.teardown
+         tests.setup, tests.teardown = nil, nil
+
+         if hooks.begin_suite then hooks.begin_suite(res, tests) end
+         res.tests = tests
+         for name, test in pairs(tests) do
+            if not opts.test_pat or name:match(opts.test_pat) then
+               run_test(name, test, res, hooks, setup, teardown)
+            end
+         end
+         if steardown then pcall(steardown) end
+         if hooks.end_suite then hooks.end_suite(res) end
+         combine_results(results, res)
+      end
+   end
+end
 
 ---Run all known test suites, with given configuration hooks.
 -- @param hooks Override the default hooks.
@@ -673,23 +728,8 @@ function run(hooks, suite_filter)
 
    local suite_filter = opts.suite_pat or suite_filter
 
-   for sname,tests in pairs(suites) do
-      if not suite_filter or sname:match(suite_filter) then
-         local setup, teardown = tests.setup, tests.teardown
-         tests.setup, tests.teardown = nil, nil
-         if count(tests) > 0 then
-            local suite = result_table(sname)
-            if hooks.begin_suite then hooks.begin_suite(suite, tests) end
-            suite.tests = suite
-            for name, test in pairs(tests) do
-               if not opts.test_pat or name:match(opts.test_pat) then
-                  run_test(name, test, suite, hooks, setup, teardown)
-               end
-            end
-            if hooks.end_suite then hooks.end_suite(suite) end
-            combine_results(results, suite)
-         end
-      end
+   for sname,suite in pairs(suites) do
+      run_suite(hooks, opts, results, suite_filter, sname, suite)
    end
    if now then results.t_post = now() end
    if hooks.done then hooks.done(results) end
@@ -926,12 +966,16 @@ end
 local function get_seeds_and_args(t)
    local ss = {}
    for _,r in ipairs(t) do
-      if r.seed then ss[#ss+1] = r.seed end
+      if r.seed then
+         ss[#ss+1] = fmt("%s %s\n   Seed: %s",
+                         r.reason or "", r.msg and ("\n   " .. r.msg) or "", r.seed)
+      end
       if r.args then
          for i,arg in ipairs(r.args) do
             ss[#ss+1] = "  * " .. arg
          end
       end
+      ss[#ss+1] = ""
    end
    return ss
 end
@@ -1028,9 +1072,9 @@ local function assert_random(opt, f, ...)
 
    for i=1,opt.count do
       seed = run_randtest(seed, f, args, r, opt.seed_limit)
-      if #r.ss > opt.max_skips or
-         #r.fs > opt.max_failures or
-         #r.es > opt.max_errors then break
+      if #r.ss >= opt.max_skips or
+         #r.fs >= opt.max_failures or
+         #r.es >= opt.max_errors then break
       end
       if opt.show_progress and i % tick == 0 then
          dot(".")

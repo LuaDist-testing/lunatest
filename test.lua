@@ -8,6 +8,8 @@ print '=============================='
 
 
 lunatest.suite("suite-with-random-tests")
+lunatest.suite("suite-hooks")
+lunatest.suite("suite-hooks-fail")
 
 function test_fail()
    -- the true here is so the test run as a whole still succeeds.
@@ -37,6 +39,10 @@ end
 
 function test_assert_equal()
    assert_equal(4, 4)
+end
+
+function test_assert_equal_tolerance()
+   assert_equal(4, 4.0001, 0.0001, "Should approximately match")
 end
 
 function test_assert_not_equal()
