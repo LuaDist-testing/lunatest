@@ -1,9 +1,17 @@
+-- This file was automatically generated for the LuaDist project.
+
 package = "lunatest"
-version = "0.9.1-0"
+version = "0.9.5-1"
+-- LuaDist source
 source = {
-   url = "git://github.com/silentbicycle/lunatest.git",
-   tag = "v0.9.1"
+  tag = "0.9.5-1",
+  url = "git://github.com/LuaDist-testing/lunatest.git"
 }
+-- Original source
+-- source = {
+--    url = "git://github.com/silentbicycle/lunatest.git",
+--    tag = "v0.9.5"
+-- }
 description = {
    summary = "xUnit-style + randomized unit testing framework",
    detailed = [[
@@ -25,5 +33,5 @@ build = {
    type = "builtin",
    modules = {
       lunatest = "lunatest.lua"
-   }           
+   }
 }
